@@ -7,7 +7,8 @@ mod friendly;
 mod protocol;
 
 use anyhow::Result;
-use clap::{Parser, Subcommand};
+use clap::error::ErrorKind;
+use clap::{CommandFactory, Parser, Subcommand};
 use serde_json::json;
 
 use protocol::DaemonRequest;
@@ -160,14 +161,23 @@ async fn main() {
 fn build_request(cli: &Cli) -> DaemonRequest {
     let (command, args) = match &cli.command {
         Commands::ListPages => ("list-pages", json!({})),
-        Commands::Navigate { url, back, forward, reload } => (
+        Commands::Navigate {
+            url,
+            back,
+            forward,
+            reload,
+        } => (
             "navigate",
             json!({"url": url, "back": back, "forward": forward, "reload": reload}),
         ),
         Commands::NewPage { url } => ("new-page", json!({"url": url})),
         Commands::ClosePage { index } => ("close-page", json!({"index": index})),
         Commands::SelectPage { index } => ("select-page", json!({"index": index})),
-        Commands::Screenshot { output, format, full_page } => (
+        Commands::Screenshot {
+            output,
+            format,
+            full_page,
+        } => (
             "screenshot",
             json!({"output": output, "format": format, "full_page": full_page}),
         ),
@@ -180,16 +190,19 @@ fn build_request(cli: &Cli) -> DaemonRequest {
         ),
         Commands::Click { selector } => ("click", json!({"selector": selector})),
         Commands::ClickAt { x, y } => ("click-at", json!({"x": x, "y": y})),
-        Commands::Fill { selector, value } => ("fill", json!({"selector": selector, "value": value})),
-        Commands::TypeText { text, submit_key } => (
-            "type-text",
-            json!({"text": text, "submit_key": submit_key}),
-        ),
+        Commands::Fill { selector, value } => {
+            ("fill", json!({"selector": selector, "value": value}))
+        }
+        Commands::TypeText { text, submit_key } => {
+            ("type-text", json!({"text": text, "submit_key": submit_key}))
+        }
         Commands::PressKey { key } => ("press-key", json!({"key": key})),
         Commands::Hover { selector } => ("hover", json!({"selector": selector})),
         Commands::Snapshot => ("snapshot", json!({})),
         Commands::Resize { width, height } => ("resize", json!({"width": width, "height": height})),
-        Commands::WaitFor { text, timeout } => ("wait-for", json!({"text": text, "timeout": timeout})),
+        Commands::WaitFor { text, timeout } => {
+            ("wait-for", json!({"text": text, "timeout": timeout}))
+        }
     };
 
     DaemonRequest {
@@ -217,7 +230,20 @@ fn print_response(resp: &protocol::DaemonResponse) {
 }
 
 async fn run() -> Result<()> {
-    let cli = Cli::parse();
+    let cli = match Cli::try_parse() {
+        Ok(c) => c,
+        Err(e) => {
+            let _ = e.print();
+            if e.kind() != ErrorKind::DisplayHelp && e.kind() != ErrorKind::DisplayVersion {
+                println!("\n=========================================");
+                println!("Help Menu & Available Commands");
+                println!("=========================================\n");
+                let mut cmd = Cli::command();
+                let _ = cmd.print_help();
+            }
+            std::process::exit(1);
+        }
+    };
 
     let ws_url = browser::resolve_ws_url(
         cli.ws_endpoint.as_deref(),
@@ -264,7 +290,10 @@ async fn run_direct(cli: &Cli, ws_url: &str) -> Result<String> {
 
     let is_browser = matches!(
         cli.command,
-        Commands::ListPages | Commands::NewPage { .. } | Commands::ClosePage { .. } | Commands::SelectPage { .. }
+        Commands::ListPages
+            | Commands::NewPage { .. }
+            | Commands::ClosePage { .. }
+            | Commands::SelectPage { .. }
     );
 
     if is_browser {
@@ -272,7 +301,9 @@ async fn run_direct(cli: &Cli, ws_url: &str) -> Result<String> {
             Commands::ListPages => commands::pages::list_pages(&mut client, cli.json).await,
             Commands::NewPage { url } => commands::pages::new_page(&mut client, url).await,
             Commands::ClosePage { index } => commands::pages::close_page(&mut client, *index).await,
-            Commands::SelectPage { index } => commands::pages::select_page(&mut client, *index).await,
+            Commands::SelectPage { index } => {
+                commands::pages::select_page(&mut client, *index).await
+            }
             _ => unreachable!(),
         };
     }
@@ -282,24 +313,76 @@ async fn run_direct(cli: &Cli, ws_url: &str) -> Result<String> {
     let session_id = client.attach_to_target(&target_id).await?;
 
     let result = match &cli.command {
-        Commands::Navigate { url, back, forward, reload } => {
-            commands::navigate::navigate(&mut client, &session_id, url.as_deref(), *back, *forward, *reload).await
+        Commands::Navigate {
+            url,
+            back,
+            forward,
+            reload,
+        } => {
+            commands::navigate::navigate(
+                &mut client,
+                &session_id,
+                url.as_deref(),
+                *back,
+                *forward,
+                *reload,
+            )
+            .await
         }
-        Commands::Screenshot { output, format, full_page } => {
-            commands::screenshot::take_screenshot(&mut client, &session_id, output.as_deref(), format, *full_page).await
+        Commands::Screenshot {
+            output,
+            format,
+            full_page,
+        } => {
+            commands::screenshot::take_screenshot(
+                &mut client,
+                &session_id,
+                output.as_deref(),
+                format,
+                *full_page,
+            )
+            .await
         }
-        Commands::Evaluate { expression, dialog_action } => {
-            commands::evaluate::evaluate(&mut client, &session_id, expression, cli.json, dialog_action.as_deref()).await
+        Commands::Evaluate {
+            expression,
+            dialog_action,
+        } => {
+            commands::evaluate::evaluate(
+                &mut client,
+                &session_id,
+                expression,
+                cli.json,
+                dialog_action.as_deref(),
+            )
+            .await
         }
-        Commands::Click { selector } => commands::input::click(&mut client, &session_id, selector).await,
-        Commands::ClickAt { x, y } => commands::input::click_at(&mut client, &session_id, *x, *y).await,
-        Commands::Fill { selector, value } => commands::input::fill(&mut client, &session_id, selector, value).await,
-        Commands::TypeText { text, submit_key } => commands::input::type_text(&mut client, &session_id, text, submit_key.as_deref()).await,
-        Commands::PressKey { key } => commands::input::press_key(&mut client, &session_id, key).await,
-        Commands::Hover { selector } => commands::input::hover(&mut client, &session_id, selector).await,
-        Commands::Snapshot => commands::snapshot::take_snapshot(&mut client, &session_id, cli.json).await,
-        Commands::Resize { width, height } => commands::pages::resize(&mut client, &session_id, *width, *height).await,
-        Commands::WaitFor { text, timeout } => commands::pages::wait_for(&mut client, &session_id, text, *timeout).await,
+        Commands::Click { selector } => {
+            commands::input::click(&mut client, &session_id, selector).await
+        }
+        Commands::ClickAt { x, y } => {
+            commands::input::click_at(&mut client, &session_id, *x, *y).await
+        }
+        Commands::Fill { selector, value } => {
+            commands::input::fill(&mut client, &session_id, selector, value).await
+        }
+        Commands::TypeText { text, submit_key } => {
+            commands::input::type_text(&mut client, &session_id, text, submit_key.as_deref()).await
+        }
+        Commands::PressKey { key } => {
+            commands::input::press_key(&mut client, &session_id, key).await
+        }
+        Commands::Hover { selector } => {
+            commands::input::hover(&mut client, &session_id, selector).await
+        }
+        Commands::Snapshot => {
+            commands::snapshot::take_snapshot(&mut client, &session_id, cli.json).await
+        }
+        Commands::Resize { width, height } => {
+            commands::pages::resize(&mut client, &session_id, *width, *height).await
+        }
+        Commands::WaitFor { text, timeout } => {
+            commands::pages::wait_for(&mut client, &session_id, text, *timeout).await
+        }
         _ => unreachable!(),
     };
 

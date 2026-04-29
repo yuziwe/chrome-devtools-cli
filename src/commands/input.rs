@@ -35,8 +35,12 @@ async fn get_element_center(
         bail!("{err}");
     }
 
-    let x = val["x"].as_f64().ok_or_else(|| anyhow::anyhow!("Missing x coordinate"))?;
-    let y = val["y"].as_f64().ok_or_else(|| anyhow::anyhow!("Missing y coordinate"))?;
+    let x = val["x"]
+        .as_f64()
+        .ok_or_else(|| anyhow::anyhow!("Missing x coordinate"))?;
+    let y = val["y"]
+        .as_f64()
+        .ok_or_else(|| anyhow::anyhow!("Missing y coordinate"))?;
     Ok((x, y))
 }
 
@@ -71,12 +75,7 @@ pub async fn click(client: &mut CdpClient, session_id: &str, selector: &str) -> 
     Ok(format!("Clicked: {selector}"))
 }
 
-pub async fn click_at(
-    client: &mut CdpClient,
-    session_id: &str,
-    x: f64,
-    y: f64,
-) -> Result<String> {
+pub async fn click_at(client: &mut CdpClient, session_id: &str, x: f64, y: f64) -> Result<String> {
     dispatch_mouse(client, session_id, "mouseMoved", x, y, "none", 0).await?;
     dispatch_mouse(client, session_id, "mousePressed", x, y, "left", 1).await?;
     dispatch_mouse(client, session_id, "mouseReleased", x, y, "left", 1).await?;
@@ -160,9 +159,7 @@ pub async fn type_text(
 
     Ok(format!(
         "Typed: {text}{}",
-        submit_key
-            .map(|k| format!(" + {k}"))
-            .unwrap_or_default()
+        submit_key.map(|k| format!(" + {k}")).unwrap_or_default()
     ))
 }
 

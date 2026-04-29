@@ -17,15 +17,17 @@ pub async fn evaluate(
     }
 
     // Prepare the evaluation command
-    let id = client.send_raw_no_wait(
-        Some(session_id),
-        "Runtime.evaluate",
-        json!({
-            "expression": expression,
-            "returnByValue": true,
-            "awaitPromise": true,
-        }),
-    ).await?;
+    let id = client
+        .send_raw_no_wait(
+            Some(session_id),
+            "Runtime.evaluate",
+            json!({
+                "expression": expression,
+                "returnByValue": true,
+                "awaitPromise": true,
+            }),
+        )
+        .await?;
 
     // Wait for the response, but also handle Page.javascriptDialogOpening events
     loop {
@@ -88,7 +90,9 @@ pub async fn evaluate(
                         params["promptText"] = json!(text);
                     }
                 }
-                client.send_to_target(session_id, "Page.handleJavaScriptDialog", params).await?;
+                client
+                    .send_to_target(session_id, "Page.handleJavaScriptDialog", params)
+                    .await?;
             }
         }
     }

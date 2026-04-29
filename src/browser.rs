@@ -95,8 +95,8 @@ fn default_chrome_user_data_dir(channel: &str) -> Result<PathBuf> {
 
     #[cfg(target_os = "windows")]
     {
-        let local_app_data = std::env::var("LOCALAPPDATA")
-            .map_err(|_| anyhow!("LOCALAPPDATA not set"))?;
+        let local_app_data =
+            std::env::var("LOCALAPPDATA").map_err(|_| anyhow!("LOCALAPPDATA not set"))?;
         let base = PathBuf::from(local_app_data).join("Google");
         let dir = match channel {
             "stable" | "chrome" => base.join("Chrome/User Data"),

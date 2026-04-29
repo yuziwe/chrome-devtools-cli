@@ -85,7 +85,10 @@ async fn handle_request(client: &mut CdpClient, req: &DaemonRequest) -> DaemonRe
 }
 
 fn is_browser_level(cmd: &str) -> bool {
-    matches!(cmd, "list-pages" | "new-page" | "close-page" | "select-page")
+    matches!(
+        cmd,
+        "list-pages" | "new-page" | "close-page" | "select-page"
+    )
 }
 
 async fn execute_command(client: &mut CdpClient, req: &DaemonRequest) -> Result<String> {
@@ -152,7 +155,9 @@ async fn execute_command(client: &mut CdpClient, req: &DaemonRequest) -> Result<
             .await
         }
         "click" => {
-            let sel = args["selector"].as_str().ok_or(anyhow!("selector required"))?;
+            let sel = args["selector"]
+                .as_str()
+                .ok_or(anyhow!("selector required"))?;
             commands::input::click(client, &session_id, sel).await
         }
         "click-at" => {
@@ -161,26 +166,27 @@ async fn execute_command(client: &mut CdpClient, req: &DaemonRequest) -> Result<
             commands::input::click_at(client, &session_id, x, y).await
         }
         "fill" => {
-            let sel = args["selector"].as_str().ok_or(anyhow!("selector required"))?;
+            let sel = args["selector"]
+                .as_str()
+                .ok_or(anyhow!("selector required"))?;
             let val = args["value"].as_str().ok_or(anyhow!("value required"))?;
             commands::input::fill(client, &session_id, sel, val).await
         }
         "type-text" => {
             let text = args["text"].as_str().ok_or(anyhow!("text required"))?;
-            commands::input::type_text(client, &session_id, text, args["submit_key"].as_str())
-                .await
+            commands::input::type_text(client, &session_id, text, args["submit_key"].as_str()).await
         }
         "press-key" => {
             let key = args["key"].as_str().ok_or(anyhow!("key required"))?;
             commands::input::press_key(client, &session_id, key).await
         }
         "hover" => {
-            let sel = args["selector"].as_str().ok_or(anyhow!("selector required"))?;
+            let sel = args["selector"]
+                .as_str()
+                .ok_or(anyhow!("selector required"))?;
             commands::input::hover(client, &session_id, sel).await
         }
-        "snapshot" => {
-            commands::snapshot::take_snapshot(client, &session_id, req.json_output).await
-        }
+        "snapshot" => commands::snapshot::take_snapshot(client, &session_id, req.json_output).await,
         "resize" => {
             let w = args["width"].as_u64().ok_or(anyhow!("width required"))? as u32;
             let h = args["height"].as_u64().ok_or(anyhow!("height required"))? as u32;

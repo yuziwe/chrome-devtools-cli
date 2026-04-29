@@ -1,9 +1,12 @@
 use crate::friendly;
 use anyhow::{anyhow, bail, Result};
-use futures_util::{SinkExt, StreamExt, stream::{SplitSink, SplitStream}};
-use serde_json::{Value, json};
+use futures_util::{
+    stream::{SplitSink, SplitStream},
+    SinkExt, StreamExt,
+};
+use serde_json::{json, Value};
 use tokio::net::TcpStream;
-use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async, tungstenite::Message};
+use tokio_tungstenite::{connect_async, tungstenite::Message, MaybeTlsStream, WebSocketStream};
 
 type WsStream = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
@@ -24,11 +27,15 @@ pub struct TargetInfo {
 
 impl CdpClient {
     pub async fn connect(ws_url: &str) -> Result<Self> {
-        let (ws, _) = connect_async(ws_url).await.map_err(|e| {
-            anyhow!("Failed to connect to Chrome at {ws_url}: {e}")
-        })?;
+        let (ws, _) = connect_async(ws_url)
+            .await
+            .map_err(|e| anyhow!("Failed to connect to Chrome at {ws_url}: {e}"))?;
         let (write, read) = ws.split();
-        Ok(Self { write, read, next_id: 1 })
+        Ok(Self {
+            write,
+            read,
+            next_id: 1,
+        })
     }
 
     /// Send a browser-level CDP command.
@@ -107,7 +114,8 @@ impl CdpClient {
             if remaining.is_zero() {
                 bail!("Timeout waiting for event {event_method}");
             }
-            let text = tokio::time::timeout(remaining, self.read_text()).await
+            let text = tokio::time::timeout(remaining, self.read_text())
+                .await
                 .map_err(|_| anyhow!("Timeout waiting for event {event_method}"))??;
             let resp: Value = serde_json::from_str(&text)?;
             if resp.get("method").and_then(|v| v.as_str()) == Some(event_method) {
@@ -152,10 +160,12 @@ impl CdpClient {
     }
 
     pub async fn attach_to_target(&mut self, target_id: &str) -> Result<String> {
-        let result = self.send(
-            "Target.attachToTarget",
-            json!({"targetId": target_id, "flatten": true}),
-        ).await?;
+        let result = self
+            .send(
+                "Target.attachToTarget",
+                json!({"targetId": target_id, "flatten": true}),
+            )
+            .await?;
         result["sessionId"]
             .as_str()
             .map(|s| s.to_string())
@@ -163,17 +173,21 @@ impl CdpClient {
     }
 
     pub async fn detach_from_target(&mut self, session_id: &str) -> Result<()> {
-        self.send("Target.detachFromTarget", json!({"sessionId": session_id})).await?;
+        self.send("Target.detachFromTarget", json!({"sessionId": session_id}))
+            .await?;
         Ok(())
     }
 
     pub async fn activate_target(&mut self, target_id: &str) -> Result<()> {
-        self.send("Target.activateTarget", json!({"targetId": target_id})).await?;
+        self.send("Target.activateTarget", json!({"targetId": target_id}))
+            .await?;
         Ok(())
     }
 
     pub async fn create_target(&mut self, url: &str) -> Result<String> {
-        let result = self.send("Target.createTarget", json!({"url": url})).await?;
+        let result = self
+            .send("Target.createTarget", json!({"url": url}))
+            .await?;
         result["targetId"]
             .as_str()
             .map(|s| s.to_string())
@@ -181,7 +195,8 @@ impl CdpClient {
     }
 
     pub async fn close_target(&mut self, target_id: &str) -> Result<()> {
-        self.send("Target.closeTarget", json!({"targetId": target_id})).await?;
+        self.send("Target.closeTarget", json!({"targetId": target_id}))
+            .await?;
         Ok(())
     }
 
