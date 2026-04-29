@@ -10,8 +10,6 @@ use crate::protocol::*;
 const IDLE_TIMEOUT: Duration = Duration::from_secs(300); // 5 minutes
 
 pub async fn run_daemon(ws_url: &str) -> Result<()> {
-    let mut client = CdpClient::connect(ws_url).await?;
-
     // Clean up stale socket
     let sock = socket_path();
     let _ = std::fs::remove_file(&sock);
@@ -19,7 +17,15 @@ pub async fn run_daemon(ws_url: &str) -> Result<()> {
     // Write PID
     std::fs::write(pid_path(), std::process::id().to_string())?;
 
+    // Bind socket FIRST so the CLI knows the daemon is alive and can connect.
+    // If we wait for CdpClient::connect first, a macOS network permission prompt
+    // can block the daemon and cause the CLI's 5-second wait_for_daemon timeout to expire.
     let listener = UnixListener::bind(&sock)?;
+
+    // We don't connect immediately. We wait for the first connection from the CLI.
+    // This ensures the CLI wait_for_daemon() succeeds, and the CLI blocks on read_msg()
+    // while the daemon handles the potentially slow macOS/Chrome network permission prompt.
+    let mut client: Option<CdpClient> = None;
 
     // Signal readiness by socket existence (it's already bound)
     loop {
@@ -48,10 +54,39 @@ pub async fn run_daemon(ws_url: &str) -> Result<()> {
                     }
                 };
 
-                let response = handle_request(&mut client, &request).await;
+                // Connect lazily
+                if client.is_none() {
+                    match CdpClient::connect(ws_url).await {
+                        Ok(c) => client = Some(c),
+                        Err(e) => {
+                            let resp = DaemonResponse {
+                                success: false,
+                                output: String::new(),
+                                error: format!("Failed to connect to Chrome: {e:#}"),
+                            };
+                            let _ = write_msg(&mut stream, &serde_json::to_vec(&resp).unwrap()).await;
+                            // Exit daemon if we can't connect, so the next CLI call will spawn a fresh daemon
+                            break;
+                        }
+                    }
+                }
+
+                let response = handle_request(client.as_mut().unwrap(), &request).await;
+
+                // Check if the error indicates a disconnected WebSocket.
+                // If so, we should exit the daemon so it can be respawned cleanly next time.
+                let is_fatal = !response.success && (
+                    response.error.contains("WebSocket closed") || 
+                    response.error.contains("WebSocket connection closed") ||
+                    response.error.contains("WebSocket error")
+                );
 
                 if let Ok(resp_bytes) = serde_json::to_vec(&response) {
                     let _ = write_msg(&mut stream, &resp_bytes).await;
+                }
+
+                if is_fatal {
+                    break;
                 }
             }
             Ok(Err(e)) => {
