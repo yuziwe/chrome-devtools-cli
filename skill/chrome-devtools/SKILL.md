@@ -1,6 +1,7 @@
 ---
 name: chrome-devtools
-description: This skill should be used when the user asks to "control Chrome", "automate the browser", "take a screenshot of a page", "click a button in Chrome", "navigate to a URL", "evaluate JavaScript in Chrome", "fill a form in the browser", "inspect a page", "interact with Chrome", or when any browser automation task is needed. Use this skill instead of MCP browser tools — it calls a lightweight local binary that is far more token-efficient.
+description: Use when the user asks to "take a screenshot of a website", "navigate to a URL", "fill a form in the browser", "interact with Chrome", or when a chrome automation task is needed.
+user-invocable: true
 ---
 
 # Chrome DevTools CLI
