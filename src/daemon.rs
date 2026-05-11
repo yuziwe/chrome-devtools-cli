@@ -1,5 +1,9 @@
 use anyhow::{anyhow, Result};
 use std::time::Duration;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+#[cfg(windows)]
+use tokio::net::TcpListener;
+#[cfg(unix)]
 use tokio::net::UnixListener;
 
 use crate::cdp::CdpClient;
@@ -11,82 +15,60 @@ use serde_json::json;
 const IDLE_TIMEOUT: Duration = Duration::from_secs(300); // 5 minutes
 
 pub async fn run_daemon(ws_url: &str) -> Result<()> {
-    // Clean up stale socket
-    let sock = socket_path();
-    let _ = std::fs::remove_file(&sock);
-
     // Write PID
     std::fs::write(pid_path(), std::process::id().to_string())?;
 
-    // Bind socket FIRST so the CLI knows the daemon is alive and can connect.
-    // If we wait for CdpClient::connect first, a macOS network permission prompt
-    // can block the daemon and cause the CLI's 5-second wait_for_daemon timeout to expire.
-    let listener = UnixListener::bind(&sock)?;
+    #[cfg(unix)]
+    let listener = {
+        // Clean up stale socket
+        let sock = socket_path();
+        let _ = std::fs::remove_file(&sock);
+
+        // Bind socket FIRST so the CLI knows the daemon is alive and can connect.
+        // If we wait for CdpClient::connect first, a macOS network permission prompt
+        // can block the daemon and cause the CLI's 5-second wait_for_daemon timeout to expire.
+        UnixListener::bind(&sock)?
+    };
+
+    #[cfg(windows)]
+    let listener = {
+        // Clean up stale address file
+        let _ = std::fs::remove_file(addr_path());
+
+        // Bind listener FIRST so the CLI knows the daemon is alive and can connect.
+        // If we wait for CdpClient::connect first, a Chrome/network permission prompt
+        // can block the daemon and cause the CLI's 5-second wait_for_daemon timeout to expire.
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        std::fs::write(addr_path(), listener.local_addr()?.to_string())?;
+        listener
+    };
 
     // We don't connect immediately. We wait for the first connection from the CLI.
     // This ensures the CLI wait_for_daemon() succeeds, and the CLI blocks on read_msg()
     // while the daemon handles the potentially slow macOS/Chrome network permission prompt.
     let mut client: Option<CdpClient> = None;
 
-    // Signal readiness by socket existence (it's already bound)
+    // Signal readiness by socket/address existence (it's already bound)
+    run_accept_loop(listener, &mut client, ws_url).await;
+
+    #[cfg(unix)]
+    let _ = std::fs::remove_file(socket_path());
+
+    #[cfg(windows)]
+    let _ = std::fs::remove_file(addr_path());
+
+    let _ = std::fs::remove_file(pid_path());
+    Ok(())
+}
+
+#[cfg(unix)]
+async fn run_accept_loop(listener: UnixListener, client: &mut Option<CdpClient>, ws_url: &str) {
     loop {
         let accept = tokio::time::timeout(IDLE_TIMEOUT, listener.accept()).await;
 
         match accept {
-            Ok(Ok((mut stream, _))) => {
-                let req_bytes = match read_msg(&mut stream).await {
-                    Ok(b) => b,
-                    Err(e) => {
-                        eprintln!("daemon: read error: {e}");
-                        continue;
-                    }
-                };
-
-                let request: DaemonRequest = match serde_json::from_slice(&req_bytes) {
-                    Ok(r) => r,
-                    Err(e) => {
-                        let resp = DaemonResponse {
-                            success: false,
-                            output: String::new(),
-                            error: format!("Invalid request: {e}"),
-                        };
-                        let _ = write_msg(&mut stream, &serde_json::to_vec(&resp).unwrap()).await;
-                        continue;
-                    }
-                };
-
-                // Connect lazily
-                if client.is_none() {
-                    match CdpClient::connect(ws_url).await {
-                        Ok(c) => client = Some(c),
-                        Err(e) => {
-                            let resp = DaemonResponse {
-                                success: false,
-                                output: String::new(),
-                                error: format!("Failed to connect to Chrome: {e:#}"),
-                            };
-                            let _ = write_msg(&mut stream, &serde_json::to_vec(&resp).unwrap()).await;
-                            // Exit daemon if we can't connect, so the next CLI call will spawn a fresh daemon
-                            break;
-                        }
-                    }
-                }
-
-                let response = handle_request(client.as_mut().unwrap(), &request).await;
-
-                // Check if the error indicates a disconnected WebSocket.
-                // If so, we should exit the daemon so it can be respawned cleanly next time.
-                let is_fatal = !response.success && (
-                    response.error.contains("WebSocket closed") || 
-                    response.error.contains("WebSocket connection closed") ||
-                    response.error.contains("WebSocket error")
-                );
-
-                if let Ok(resp_bytes) = serde_json::to_vec(&response) {
-                    let _ = write_msg(&mut stream, &resp_bytes).await;
-                }
-
-                if is_fatal {
+            Ok(Ok((stream, _))) => {
+                if !handle_connection(stream, client, ws_url).await {
                     break;
                 }
             }
@@ -99,10 +81,86 @@ pub async fn run_daemon(ws_url: &str) -> Result<()> {
             }
         }
     }
+}
 
-    let _ = std::fs::remove_file(&sock);
-    let _ = std::fs::remove_file(pid_path());
-    Ok(())
+#[cfg(windows)]
+async fn run_accept_loop(listener: TcpListener, client: &mut Option<CdpClient>, ws_url: &str) {
+    loop {
+        let accept = tokio::time::timeout(IDLE_TIMEOUT, listener.accept()).await;
+
+        match accept {
+            Ok(Ok((stream, _))) => {
+                if !handle_connection(stream, client, ws_url).await {
+                    break;
+                }
+            }
+            Ok(Err(e)) => {
+                eprintln!("daemon: accept error: {e}");
+            }
+            Err(_) => {
+                // Idle timeout — exit
+                break;
+            }
+        }
+    }
+}
+
+async fn handle_connection<S>(mut stream: S, client: &mut Option<CdpClient>, ws_url: &str) -> bool
+where
+    S: AsyncReadExt + AsyncWriteExt + Unpin,
+{
+    let req_bytes = match read_msg(&mut stream).await {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("daemon: read error: {e}");
+            return true;
+        }
+    };
+
+    let request: DaemonRequest = match serde_json::from_slice(&req_bytes) {
+        Ok(r) => r,
+        Err(e) => {
+            let resp = DaemonResponse {
+                success: false,
+                output: String::new(),
+                error: format!("Invalid request: {e}"),
+            };
+            let _ = write_msg(&mut stream, &serde_json::to_vec(&resp).unwrap()).await;
+            return true;
+        }
+    };
+
+    // Connect lazily
+    if client.is_none() {
+        match CdpClient::connect(ws_url).await {
+            Ok(c) => *client = Some(c),
+            Err(e) => {
+                let resp = DaemonResponse {
+                    success: false,
+                    output: String::new(),
+                    error: format!("Failed to connect to Chrome: {e:#}"),
+                };
+                let _ = write_msg(&mut stream, &serde_json::to_vec(&resp).unwrap()).await;
+                // Exit daemon if we can't connect, so the next CLI call will spawn a fresh daemon
+                return false;
+            }
+        }
+    }
+
+    let response = handle_request(client.as_mut().unwrap(), &request).await;
+
+    // Check if the error indicates a disconnected WebSocket.
+    // If so, we should exit the daemon so it can be respawned cleanly next time.
+    let is_fatal = !response.success
+        && (response.error.contains("WebSocket closed")
+            || response.error.contains("WebSocket connection closed")
+            || response.error.contains("WebSocket error"));
+
+    if let Ok(resp_bytes) = serde_json::to_vec(&response) {
+        let _ = write_msg(&mut stream, &resp_bytes).await;
+    }
+
+    !is_fatal
 }
 
 async fn handle_request(client: &mut CdpClient, req: &DaemonRequest) -> DaemonResponse {
@@ -188,13 +246,7 @@ async fn execute_command(client: &mut CdpClient, req: &DaemonRequest) -> Result<
             let expr = args["expression"]
                 .as_str()
                 .ok_or(anyhow!("expression required"))?;
-            commands::evaluate::evaluate(
-                client,
-                &session_id,
-                expr,
-                req.json_output,
-            )
-            .await
+            commands::evaluate::evaluate(client, &session_id, expr, req.json_output).await
         }
         "click" => {
             let sel = args["selector"]

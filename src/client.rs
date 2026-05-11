@@ -1,13 +1,26 @@
 use anyhow::{bail, Result};
 use std::time::Duration;
+#[cfg(windows)]
+use tokio::net::TcpStream;
+#[cfg(unix)]
 use tokio::net::UnixStream;
 
 use crate::protocol::*;
 
+#[cfg(unix)]
+async fn connect_daemon() -> Result<UnixStream> {
+    Ok(UnixStream::connect(socket_path()).await?)
+}
+
+#[cfg(windows)]
+async fn connect_daemon() -> Result<TcpStream> {
+    let addr = std::fs::read_to_string(addr_path())?;
+    Ok(TcpStream::connect(addr.trim()).await?)
+}
+
 /// Try to send a request to the daemon. Returns error if daemon is not running.
 pub async fn send_to_daemon(request: &DaemonRequest) -> Result<DaemonResponse> {
-    let sock = socket_path();
-    let mut stream = UnixStream::connect(&sock).await?;
+    let mut stream = connect_daemon().await?;
 
     let req_bytes = serde_json::to_vec(request)?;
     write_msg(&mut stream, &req_bytes).await?;
@@ -36,7 +49,7 @@ pub async fn wait_for_daemon() -> Result<()> {
         if tokio::time::Instant::now() > deadline {
             bail!("Daemon failed to start within 5 seconds");
         }
-        if UnixStream::connect(socket_path()).await.is_ok() {
+        if connect_daemon().await.is_ok() {
             return Ok(());
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
